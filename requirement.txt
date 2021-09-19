@@ -1,0 +1,9 @@
+###### Requirements without Version Specifiers ######`
+numpy
+snscrape
+pandas
+datetime
+vaderSentiment
+
+###### pip3 install git+https://github.com/JustAnotherArchivist/snscrape.git ######`
+pip3 install git+https://github.com/JustAnotherArchivist/snscrape.git@develop#egg=snscrape
