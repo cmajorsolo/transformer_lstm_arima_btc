@@ -155,4 +155,4 @@ def get_avg_sentiment_score_for_a_range_of_days(tweeter_key_word='BitCoin', star
     sentiment_df = pd.DataFrame(sentimentList,columns=['Datetime', 'sentimentScore'])
     sentiment_df.to_csv('./Data/{}'.format(sentiment_score_csv))
 
-# get_avg_sentiment_score_for_a_range_of_days(numdays=5, top_n_tweets=10, start_date=datetime.datetime(2021, 1, 1))
+get_avg_sentiment_score_for_a_range_of_days(tweeter_key_word='Ethereum', numdays=5, top_n_tweets=10, start_date=datetime.datetime(2015, 1, 2), sentiment_score_csv='eth_sentiment_score')
