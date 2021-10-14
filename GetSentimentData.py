@@ -6,6 +6,10 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import logging
 import re
 
+'''
+This code blocks get sentiment data using snscrape and anayzling the sentiment of the day using VADER
+'''
+
 # sentiment analyzer
 analyser = SentimentIntensityAnalyzer()
 def sentiment_analyzer_scores(text):

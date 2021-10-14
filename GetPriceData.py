@@ -1,5 +1,5 @@
 '''
-Downloading data and preprocessing data
+Scraping BTC and ETH data 
 '''
 import json
 import requests
