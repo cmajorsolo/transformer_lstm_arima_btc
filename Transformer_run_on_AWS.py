@@ -85,7 +85,7 @@ if __name__ == '__main__':
     # Getting data from S3
     train_data_uri = 's3://cmajorsolo-transformerbucket/data/btc_train.csv'
     test_data_uri = 's3://cmajorsolo-transformerbucket/data/btc_train.csv'
-    val_data_uri = 's3://cmajorsolo-transformerbucket/data/btc_va.csv'
+    val_data_uri = 's3://cmajorsolo-transformerbucket/data/btc_val.csv'
 
     train_data, val_data, test_data = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     train_data = read_data_from_s3(train_data_uri)
