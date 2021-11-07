@@ -1,146 +1,137 @@
+import logging
+logging.getLogger("tensorflow").setLevel(logging.ERROR)
+from tensorflow.python.keras.backend import _get_available_gpus 
 import argparse, os
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import codecs
+import json
+
 from tensorflow.keras.models import *
 from tensorflow.keras.layers import *
-print('Tensorflow version: {}'.format(tf.__version__))
-
-import s3fs
-fs = s3fs.S3FileSystem()
-
-import matplotlib.pyplot as plt
-plt.style.use('seaborn')
-
-import warnings
-warnings.filterwarnings('ignore')
 
 from Time2Vector import Time2Vector
 from Transformer import TransformerEncoder, SingleAttention, MultiAttention
 from tensorflow.keras.utils import multi_gpu_model
-from keras import backend as K
 
-def read_data_from_s3(uri):
-    data = pd.DataFrame()
-    with fs.open(uri) as f:
-        data = pd.read_csv(f)
-    return data
+d_k = 256
+d_v = 256
+n_heads = 12
+ff_dim = 256
+seq_len = 240
+# seq_len = 15
+model_name = 'transformer'
 
-def create_model():
-    '''Initialize time and transformer layers'''
-    time_embedding = Time2Vector(seq_len)
-    attn_layer1 = TransformerEncoder(d_k, d_v, n_heads, ff_dim)
-    attn_layer2 = TransformerEncoder(d_k, d_v, n_heads, ff_dim)
-    attn_layer3 = TransformerEncoder(d_k, d_v, n_heads, ff_dim)
-    
-    '''Construct model'''
-    in_seq = tf.keras.Input(shape=(seq_len, 5))
-    x = time_embedding(in_seq)
-    x = tf.keras.layers.Concatenate(axis=-1)([in_seq, x])
-    x = attn_layer1((x, x, x))
-    x = attn_layer2((x, x, x))
-    x = attn_layer3((x, x, x))
-    x = tf.keras.layers.GlobalAveragePooling1D(data_format='channels_first')(x)
-    x = tf.keras.layers.Dropout(0.1)(x)
-    x = tf.keras.layers.Dense(64, activation='relu')(x)
-    x = tf.keras.layers.Dropout(0.1)(x)
-    out = tf.keras.layers.Dense(1, activation='linear')(x)
+def parse_args():
 
-    model = tf.keras.Model(inputs=in_seq, outputs=out)
-    model.compile(loss='mse', optimizer='adam', metrics=['mae', 'mape'])
-    return model
-
-
-if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--batch-size', type=int, default=32)
-    parser.add_argument('--seq-len', type=int, default=240)
+    # hyperparameters sent by the client are passed as command-line arguments to the script
     parser.add_argument('--epochs', type=int, default=35)
-    parser.add_argument('--learning-rate', type=float, default=0.01)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--learning_rate', type=float, default=0.01)
 
-    parser.add_argument('--gpu-count', type=int, default=os.environ['SM_NUM_GPUS'])
-    parser.add_argument('--model-dir', type=str, default=os.environ['SM_MODEL_DIR'])
+    # data directories
     parser.add_argument('--training', type=str, default=os.environ['SM_CHANNEL_TRAINING'])
     parser.add_argument('--validation', type=str, default=os.environ['SM_CHANNEL_VALIDATION'])
 
-    args, _ = parser.parse_known_args()
-    epochs     = args.epochs
-    lr         = args.learning_rate
-    batch_size = args.batch_size
-    seq_len    = args.seq_len
+    # model directory: we will use the default set by SageMaker, /opt/ml/model
+    parser.add_argument('--gpu-count', type=int, default=os.environ['SM_NUM_GPUS'])
+    parser.add_argument('--model_dir', type=str, default=os.environ.get('SM_MODEL_DIR'))
 
-    gpu_count  = args.gpu_count
-    model_dir  = args.model_dir
-    training_dir   = args.training
-    validation_dir = args.validation
+    return parser.parse_known_args()
 
-    d_k = 256
-    d_v = 256
-    n_heads = 12
-    ff_dim = 256
+def save_history(path, history):
+    history_for_json = {}
+    # transform float values that aren't json-serializable
+    for key in list(history.history.keys()):
+        if type(history.history[key]) == np.ndarray:
+            history_for_json[key] == history.history[key].tolist()
+        elif type(history.history[key]) == list:
+           if  type(history.history[key][0]) == np.float32 or type(history.history[key][0]) == np.float64:
+               history_for_json[key] = list(map(float, history.history[key]))
 
-    model_name = 'transformer'
+    with codecs.open(path, 'w', encoding='utf-8') as f:
+        json.dump(history_for_json, f, separators=(',', ':'), sort_keys=True, indent=4) 
 
-    # Getting data from S3
-    train_data_uri = 's3://cmajorsolo-transformerbucket/data/btc_train.csv'
-    test_data_uri = 's3://cmajorsolo-transformerbucket/data/btc_test.csv'
-    val_data_uri = 's3://cmajorsolo-transformerbucket/data/btc_val.csv'
-
-    train_data, val_data, test_data = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    train_data = read_data_from_s3(train_data_uri)
-    val_data = read_data_from_s3(val_data)
-    test_data = read_data_from_s3(test_data)  
-
-
-    # Training data
+def get_train_data(training):
+#     train_data = pd.read_csv(training)
+    train_data = pd.read_csv(os.path.join(training, 'btc_train.csv'))
+    # Training data    
+    train_data = train_data.values    
     X_train, y_train = [], []
     for i in range(seq_len, len(train_data)):
         X_train.append(train_data[i-seq_len:i]) # Chunks of training data with a length of 240 df-rows
         y_train.append(train_data[:, 3][i]) #Value of 4th column (Close Price) of df-row 240+1
     X_train, y_train = np.array(X_train), np.array(y_train)
+    print('x train', X_train.shape,'y train', y_train.shape)    
+    return X_train, y_train
 
-    ###############################################################################
-
-    # Validation data
+def get_val_data(validation):
+#     val_data = pd.read_csv(validation)
+    val_data = pd.read_csv(os.path.join(validation, 'btc_val.csv'))
+    # Validation data    
+    val_data = val_data.values
     X_val, y_val = [], []
     for i in range(seq_len, len(val_data)):
         X_val.append(val_data[i-seq_len:i])
         y_val.append(val_data[:, 3][i])
     X_val, y_val = np.array(X_val), np.array(y_val)
+    print('x val', X_val.shape,'y val', y_val.shape)
+    return X_val, y_val
 
-    ###############################################################################
+def get_model(learning_rate):
 
-    # Test data
-    X_test, y_test = [], []
-    for i in range(seq_len, len(test_data)):
-        X_test.append(test_data[i-seq_len:i])
-        y_test.append(test_data[:, 3][i])    
-    X_test, y_test = np.array(X_test), np.array(y_test)
-
-    model = create_model()
-    print(model.summary())
-
-    if gpu_count > 1:
-        model = multi_gpu_model(model, gpus=gpu_count)
-  
+    mirrored_strategy = tf.distribute.MirroredStrategy()
     
-    callback = tf.keras.callbacks.ModelCheckpoint(model_name, monitor='val_loss', save_best_only=True, verbose=1)
+    with mirrored_strategy.scope():
+        '''Initialize time and transformer layers'''
+        time_embedding = Time2Vector(seq_len)
+        attn_layer1 = TransformerEncoder(d_k, d_v, n_heads, ff_dim)
+        attn_layer2 = TransformerEncoder(d_k, d_v, n_heads, ff_dim)
+        attn_layer3 = TransformerEncoder(d_k, d_v, n_heads, ff_dim)
+        
+        '''Construct model'''
+        in_seq = tf.keras.Input(shape=(seq_len, 6))
+        x = time_embedding(in_seq)
+        x = tf.keras.layers.Concatenate(axis=-1)([in_seq, x])
+        x = attn_layer1((x, x, x))
+        x = attn_layer2((x, x, x))
+        x = attn_layer3((x, x, x))
+        x = tf.keras.layers.GlobalAveragePooling1D(data_format='channels_first')(x)
+        x = tf.keras.layers.Dropout(0.1)(x)
+        x = tf.keras.layers.Dense(64, activation='relu')(x)
+        x = tf.keras.layers.Dropout(0.1)(x)
+        out = tf.keras.layers.Dense(1, activation='linear')(x)
+        
+        model = tf.keras.Model(inputs=in_seq, outputs=out)
+        optimizer = tf.keras.optimizers.Adam(learning_rate)
+        model.compile(loss='mse', optimizer=optimizer, metrics=['mae', 'mape', 'accuracy'])
+    print(model.summary())    
+    return model 
 
-    history = model.fit(X_train, y_train, 
-                        batch_size=batch_size, 
-                        epochs=epochs,
-                        callbacks=[callback],
-                        validation_data=(X_val, y_val))  
-    score = model.evaluate(X_val, y_val, verbose=0)
-    print('Validation loss    :', score[0])
-    print('Validation accuracy:', score[1])
 
-    # save Keras model for Tensorflow Serving
-    sess = K.get_session()
-    tf.saved_model.simple_save(
-        sess,
-        os.path.join(model_dir, 'model/1'),
-        inputs={'inputs': model.input},
-        outputs={t.name: t for t in model.outputs})
+if __name__ == '__main__':
+    
+    args, _ = parse_args()
+    print('---------------  args ------------------')
+    print(args)
+    
+    x_train, y_train = get_train_data(args.training)
+    x_val, y_val = get_val_data(args.validation)  
+    
+    model = get_model(args.learning_rate)
+    
+    history = model.fit(x_train, y_train,
+              batch_size=args.batch_size,
+              epochs=args.epochs,
+              validation_data=(x_val, y_val))
+    print('---------------  saving model ------------------')
+    save_history(args.model_dir + "/history.p", history)
+    
+    # create a TensorFlow SavedModel for deployment to a SageMaker endpoint with TensorFlow Serving
+    model.save(args.model_dir + '/1')
+    print('---------------  DONE --------------------------')
+    print('Model saved to {}'.format(args.model_dir))
 
